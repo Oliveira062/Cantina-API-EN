@@ -1,0 +1,16 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/canteen
+    username: canteen
+    password: canteen123
+
+canteen:
+  jwt:
+    secret: development-secret-change-it-in-production-2026
+  admin:
+    email: admin@canteen.edu
+    password: Admin@2026
+
+logging:
+  level:
+    br.edu.canteen: DEBUG

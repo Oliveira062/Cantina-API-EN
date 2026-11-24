@@ -1,0 +1,393 @@
+name: University Canteen - API
+baseUrl: http://localhost:8080
+timeoutMs: 5000
+
+variables:
+  password: Password123
+  customerEmail: "customer-${random}@test.com"
+  otherCustomerEmail: "other-${random}@test.com"
+  kitchenEmail: "kitchen-${random}@test.com"
+  cashierEmail: "cashier-${random}@test.com"
+  adminEmail: admin@canteen.edu
+  adminPassword: ${env.ADMIN_PASSWORD}
+
+headers:
+  Accept: application/json
+
+scenarios:
+  - name: Health and public menu
+    tags: [quick]
+    steps:
+      - name: API is up
+        path: /actuator/health
+        expect:
+          status: 200
+          body:
+            - path: $.status
+              equals: UP
+      - name: Menu without signing in
+        path: /api/products
+        expect:
+          status: 200
+          maxTimeMs: 1000
+          body:
+            - path: $
+              type: array
+            - path: $[*].name
+              contains: Chicken croquette
+      - name: Web interface is up
+        path: /
+        headers:
+          Accept: text/html
+        expect:
+          status: 200
+          bodyContains: University Canteen
+          headers:
+            Content-Security-Policy: "default-src 'self'"
+      - name: Canteen details
+        path: /api/canteen
+        expect:
+          status: 200
+          body:
+            - path: $.openNow
+              type: boolean
+
+  - name: Sign-up and login
+    tags: [quick, auth]
+    steps:
+      - name: Customer signs up
+        method: POST
+        path: /api/auth/register
+        body:
+          name: Ann Test
+          email: ${customerEmail}
+          password: ${password}
+          studentId: "2024001"
+        expect:
+          status: 201
+          body:
+            - path: $.role
+              equals: CUSTOMER
+            - path: $.passwordHash
+              exists: false
+      - name: Duplicate sign-up is refused
+        method: POST
+        path: /api/auth/register
+        body:
+          name: Ann Test
+          email: ${customerEmail}
+          password: ${password}
+        expect:
+          status: 409
+      - name: Sign-up with invalid data
+        method: POST
+        path: /api/auth/register
+        body:
+          name: A
+          email: invalid
+          password: "123"
+        expect:
+          status: 400
+          body:
+            - path: $.fields.email
+              exists: true
+            - path: $.fields.password
+              exists: true
+      - name: Customer signs in
+        method: POST
+        path: /api/auth/login
+        body:
+          email: ${customerEmail}
+          password: ${password}
+        expect:
+          status: 200
+          body:
+            - path: $.token
+              regex: "^[\\w-]+\\.[\\w-]+\\.[\\w-]+$"
+        capture:
+          customerToken: $.token
+          customerId: $.user.id
+      - name: Wrong password
+        method: POST
+        path: /api/auth/login
+        body:
+          email: ${customerEmail}
+          password: wrong999
+        expect:
+          status: 401
+          body:
+            - path: $.message
+              equals: Invalid email or password.
+      - name: Administrator signs in
+        method: POST
+        path: /api/auth/login
+        body:
+          email: ${adminEmail}
+          password: ${adminPassword}
+        expect:
+          status: 200
+        capture:
+          adminToken: $.token
+
+  - name: Canteen staff
+    tags: [auth]
+    steps:
+      - name: Admin creates a kitchen account
+        method: POST
+        path: /api/users
+        token: ${adminToken}
+        body:
+          name: Kate Kitchen
+          email: ${kitchenEmail}
+          password: ${password}
+          role: KITCHEN
+        expect:
+          status: 201
+      - name: Admin creates a cashier account
+        method: POST
+        path: /api/users
+        token: ${adminToken}
+        body:
+          name: Carl Cashier
+          email: ${cashierEmail}
+          password: ${password}
+          role: CASHIER
+        expect:
+          status: 201
+      - name: Kitchen signs in
+        method: POST
+        path: /api/auth/login
+        body:
+          email: ${kitchenEmail}
+          password: ${password}
+        capture:
+          kitchenToken: $.token
+        expect:
+          status: 200
+      - name: Cashier signs in
+        method: POST
+        path: /api/auth/login
+        body:
+          email: ${cashierEmail}
+          password: ${password}
+        capture:
+          cashierToken: $.token
+        expect:
+          status: 200
+      - name: Customers cannot manage users
+        path: /api/users
+        token: ${customerToken}
+        expect:
+          status: 403
+      - name: Cashier finds the customer at the counter
+        path: /api/customers?search=${customerEmail}
+        token: ${cashierToken}
+        expect:
+          status: 200
+          body:
+            - path: $
+              length: 1
+      - name: Customers cannot use the counter search
+        path: /api/customers
+        token: ${customerToken}
+        expect:
+          status: 403
+      - name: Admin restocks what this test uses
+        method: POST
+        path: /api/products/1/stock
+        token: ${adminToken}
+        body:
+          quantity: 2
+        expect:
+          status: 200
+
+  - name: Order from cart to delivery
+    tags: [order]
+    steps:
+      - name: Open order
+        method: POST
+        path: /api/orders
+        token: ${customerToken}
+        expect:
+          status: 201
+          body:
+            - path: $.status
+              equals: CREATED
+        capture:
+          order: $.number
+      - name: Add 2 croquettes
+        method: POST
+        path: /api/orders/${order}/items
+        token: ${customerToken}
+        body:
+          productCode: 1
+          quantity: 2
+        expect:
+          status: 200
+          body:
+            - path: $.total
+              equals: 12.0
+      - name: Out-of-stock product is refused
+        method: POST
+        path: /api/orders/${order}/items
+        token: ${customerToken}
+        body:
+          productCode: 5
+          quantity: 1
+        expect:
+          status: 422
+      - name: Customers cannot pay cash
+        method: POST
+        path: /api/orders/${order}/payment
+        token: ${customerToken}
+        body:
+          type: CASH
+          amountReceived: 20
+        expect:
+          status: 400
+      - name: Pay with PIX
+        method: POST
+        path: /api/orders/${order}/payment
+        token: ${customerToken}
+        body:
+          type: PIX
+        expect:
+          status: 200
+          body:
+            - path: $.approved
+              equals: true
+            - path: $.order.status
+              equals: PAID
+      - name: Customers cannot mark it ready
+        method: POST
+        path: /api/orders/${order}/ready
+        token: ${customerToken}
+        expect:
+          status: 403
+      - name: Order shows up in the kitchen queue
+        path: /api/kitchen/queue
+        token: ${kitchenToken}
+        expect:
+          status: 200
+          body:
+            - path: $[*].number
+              contains: ${order}
+      - name: Kitchen starts preparing
+        method: POST
+        path: /api/orders/${order}/preparation
+        token: ${kitchenToken}
+        expect:
+          status: 200
+      - name: Delivery before it is ready is blocked
+        method: POST
+        path: /api/orders/${order}/delivery
+        token: ${cashierToken}
+        expect:
+          status: 409
+      - name: Kitchen marks it ready
+        method: POST
+        path: /api/orders/${order}/ready
+        token: ${kitchenToken}
+        expect:
+          status: 200
+      - name: Cashier delivers
+        method: POST
+        path: /api/orders/${order}/delivery
+        token: ${cashierToken}
+        expect:
+          status: 200
+          body:
+            - path: $.status
+              equals: DELIVERED
+      - name: Delivered order cannot be canceled
+        method: POST
+        path: /api/orders/${order}/cancel
+        token: ${cashierToken}
+        expect:
+          status: 409
+      - name: Full history
+        path: /api/orders/${order}/history
+        token: ${customerToken}
+        expect:
+          status: 200
+          body:
+            - path: $
+              length: 6
+      - name: Customer received notices
+        path: /api/notifications
+        token: ${customerToken}
+        expect:
+          status: 200
+          body:
+            - path: $[0].message
+              contains: Delivered
+
+  - name: Isolation between customers
+    tags: [security]
+    steps:
+      - name: Second customer signs up
+        method: POST
+        path: /api/auth/register
+        body:
+          name: Bob Test
+          email: ${otherCustomerEmail}
+          password: ${password}
+        expect:
+          status: 201
+      - name: Second customer signs in
+        method: POST
+        path: /api/auth/login
+        body:
+          email: ${otherCustomerEmail}
+          password: ${password}
+        capture:
+          otherToken: $.token
+        expect:
+          status: 200
+      - name: Cannot see Ann's order
+        path: /api/orders/${order}
+        token: ${otherToken}
+        expect:
+          status: 404
+      - name: Cannot see Ann's history
+        path: /api/orders/${order}/history
+        token: ${otherToken}
+        expect:
+          status: 404
+      - name: Lists only their own orders
+        path: /api/orders
+        token: ${otherToken}
+        expect:
+          status: 200
+          body:
+            - path: $
+              length: 0
+
+  - name: Menu performance
+    tags: [load]
+    steps:
+      - name: 200 reads with 10 users at the same time
+        path: /api/products
+        repeat: 200
+        concurrency: 10
+        expect:
+          status: 200
+          p95MaxMs: 500
+
+security:
+  protectedRoutes:
+    - GET /api/orders
+    - GET /api/auth/me
+    - POST /api/orders
+    - POST /api/products
+    - GET /api/users
+    - GET /api/kitchen/queue
+    - GET /api/notifications
+    - PUT /api/canteen
+    - GET /api/customers
+  headers:
+    path: /api/products
+    require:
+      - X-Content-Type-Options
+      - X-Frame-Options
+      - Cache-Control
